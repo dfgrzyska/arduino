@@ -1,324 +1,137 @@
 #include <SPI.h>
 #include <TFT_eSPI.h>
+#include "AnimatedGIF.h"
 #include "HardwareSerial.h"
 #include "DFRobotDFPlayerMini.h"
 
+//-------------------------
 // LCD setup
+//-------------------------
 TFT_eSPI tft = TFT_eSPI();
 
+//-------------------------
 // DFPlayer setup
+//-------------------------
 HardwareSerial mySerial(1);
 DFRobotDFPlayerMini myDFPlayer;
 
-// Define DFPlayer control pins
+//-------------------------
+// GIF animation setup
+//-------------------------
+AnimatedGIF gif;
+
+// Include header-based GIF
+#include "cat.h"   // make sure cat.h is available in your project
+
+//-------------------------
+// DFPlayer pins & constants
+//-------------------------
 #define RX_PIN 26  // ESP32 receives from DFPlayer TX
 #define TX_PIN 27  // ESP32 transmits to DFPlayer RX
 
-// Timing constants
 #define ESP32_STARTUP_DELAY 1000    
 #define DFPLAYER_POWER_DELAY 1000   
 #define DFPLAYER_INIT_DELAY 1000    
 
-// Global variables
 bool dfPlayerReady = false;
 int currentTrack = 1;
 int currentVolume = 20;
 
-void setup() {
-  Serial.begin(115200);
-  
-  // Initialize LCD first
-  Serial.println("Initializing LCD...");
-  initializeLCD();
-  
-  // Display startup message on LCD
-  displayStartupScreen();
-  
-  Serial.println("ESP32 started. DFPlayer power OFF.");
-  Serial.println("Waiting for ESP32 to stabilize...");
-  
-  delay(ESP32_STARTUP_DELAY);
-  
-  // Initialize DFPlayer
-  dfPlayerReady = initializeDFPlayer();
-  
-  // Update LCD with final status
-  displayMainScreen();
-  
-  Serial.println("Setup complete. Commands: p=play, s=stop, n=next, b=prev, +=vol up, -=vol down");
-}
+//-------------------------
+// Enhanced GIF Draw callback with better performance
+//-------------------------
+void GIFDraw(GIFDRAW *pDraw) {
+  uint8_t *s;
+  uint16_t *usPalette;
+  static uint16_t lineBuffer[320];  // Static buffer for better performance
 
-void initializeLCD() {
-  // Manual reset for better reliability
-  pinMode(4, OUTPUT);
-  digitalWrite(4, HIGH); delay(100);
-  digitalWrite(4, LOW);  delay(200);
-  digitalWrite(4, HIGH); delay(100);
-  
-  tft.init();
-  tft.setRotation(0);  // Portrait mode
-  tft.fillScreen(TFT_BLACK);
-  
-  // Test if LCD is working
-  tft.setTextColor(TFT_WHITE);
-  tft.setTextSize(1);
-  tft.setCursor(10, 10);
-  tft.println("LCD Initialized");
-  
-  Serial.println("LCD initialized successfully");
-}
+  int iWidth = pDraw->iWidth;
+  if (iWidth + pDraw->iX > tft.width()) iWidth = tft.width() - pDraw->iX;
+  if (iWidth <= 0) return;
 
-void displayStartupScreen() {
-  tft.fillScreen(TFT_BLACK);
-  tft.setTextColor(TFT_CYAN);
-  tft.setTextSize(2);
-  tft.setCursor(20, 20);
-  tft.println("DFPlayer");
-  tft.println("  + LCD");
-  tft.println("  Setup");
-  
-  tft.setTextColor(TFT_YELLOW);
-  tft.setTextSize(1);
-  tft.setCursor(10, 100);
-  tft.println("Initializing...");
-}
+  usPalette = pDraw->pPalette;
+  s = pDraw->pPixels;
+  int y = pDraw->iY + pDraw->y;
 
-bool initializeDFPlayer() {
-  // Power on DFPlayer
-  Serial.println("Powering ON DFPlayer Mini...");  
-  delay(DFPLAYER_POWER_DELAY);
-  
-  Serial.println("Initializing DFPlayer communication...");
-  mySerial.begin(9600, SERIAL_8N1, RX_PIN, TX_PIN);
-  delay(DFPLAYER_INIT_DELAY);
-  
-  // Try to initialize with retries
-  int attempts = 0;
-  const int maxAttempts = 5;
-  
-  // Update LCD
-  tft.setTextColor(TFT_ORANGE);
-  tft.setCursor(10, 120);
-  tft.println("DFPlayer init...");
-  
-  while (attempts < maxAttempts) {
-    Serial.print("DFPlayer init attempt ");
-    Serial.print(attempts + 1);
-    Serial.print("/");
-    Serial.println(maxAttempts);
-    
-    // Update LCD with attempt number
-    tft.fillRect(10, 140, 200, 20, TFT_BLACK);
-    tft.setCursor(10, 140);
-    tft.print("Attempt: ");
-    tft.print(attempts + 1);
-    tft.print("/");
-    tft.print(maxAttempts);
-    
-    if (myDFPlayer.begin(mySerial)) {
-      Serial.println("DFPlayer Mini ready!");
-      
-      // Configure DFPlayer
-      myDFPlayer.volume(currentVolume);
-      delay(100);
-      myDFPlayer.play(currentTrack);
-      
-      Serial.println("DFPlayer configured and playing");
-      return true;
-    } else {
-      attempts++;
-      if (attempts < maxAttempts) {
-        Serial.println("DFPlayer not responding, retrying...");
-        delay(1000);
+  // Bounds check
+  if (y < 0 || y >= tft.height()) return;
+
+  if (pDraw->ucHasTransparency) {
+    // Optimized transparency handling
+    uint8_t transparent = pDraw->ucTransparent;
+    for (int x = 0; x < iWidth; x++) {
+      uint8_t pixel = s[x];
+      if (pixel != transparent) {
+        tft.drawPixel(pDraw->iX + x, y, usPalette[pixel]);
       }
     }
+  } else {
+    // Fast non-transparent line drawing
+    for (int x = 0; x < iWidth; x++) {
+      lineBuffer[x] = usPalette[s[x]];
+    }
+    // Use DMA-accelerated pushImage for better performance
+    tft.pushImage(pDraw->iX, y, iWidth, 1, lineBuffer);
   }
-  
-  Serial.println("DFPlayer initialization failed");
-  return false;
 }
 
-void displayMainScreen() {
+//-------------------------
+// Setup
+//-------------------------
+void setup() {
+  Serial.begin(115200);
+
+  // Initialize TFT with optimal settings
+  tft.init();
+  tft.setRotation(1);
   tft.fillScreen(TFT_BLACK);
   
-  // Title
-  tft.setTextColor(TFT_GREEN);
-  tft.setTextSize(2);
-  tft.setCursor(10, 10);
-  tft.println("Music Player");
-  
-  // ASCII Cat
-  displayASCIICat();
-  
-  // Status
-  tft.setTextColor(TFT_WHITE);
-  tft.setTextSize(1);
-  tft.setCursor(10, 180);
-  
-  if (dfPlayerReady) {
-    tft.setTextColor(TFT_GREEN);
-    tft.println("Status: READY");
-    tft.setTextColor(TFT_WHITE);
-    tft.print("Track: ");
-    tft.println(currentTrack);
-    tft.print("Volume: ");
-    tft.println(currentVolume);
+  Serial.println("LCD initialized");
+
+  // Initialize GIF
+  gif.begin(LITTLE_ENDIAN_PIXELS);
+  if (gif.open((uint8_t *)cat, sizeof(cat), GIFDraw)) {
+    Serial.printf("Opened cat.gif (%dx%d)\n", gif.getCanvasWidth(), gif.getCanvasHeight());
   } else {
-    tft.setTextColor(TFT_RED);
-    tft.println("Status: ERROR");
-    tft.setTextColor(TFT_WHITE);
-    tft.println("Check connections");
-  }
-  
-  // Controls
-  tft.setTextColor(TFT_CYAN);
-  tft.setCursor(10, 240);
-  tft.println("Controls:");
-  tft.setTextColor(TFT_YELLOW);
-  tft.println("p=play s=stop");
-  tft.println("n=next b=prev");
-  tft.println("+=vol+ -=vol-");
-}
-
-void displayASCIICat() {
-  tft.setTextColor(TFT_MAGENTA);
-  tft.setTextSize(1);
-  
-  // ASCII cat - positioned carefully to fit on 240px wide screen
-  tft.setCursor(5, 60);
-  tft.println(" _._     _,-'\"\"```-._");
-  tft.setCursor(5, 75);
-  tft.println("(,-.```._,'(       |\\```-/|");
-  tft.setCursor(5, 90);
-  tft.println("    ```.-' \\ )-```( , o o)");
-  tft.setCursor(5, 105);
-  tft.println("          ```-    \\```_```\"'-");
-}
-
-void updateTrackDisplay() {
-  // Clear and update track number
-  tft.fillRect(60, 190, 60, 10, TFT_BLACK);
-  tft.setTextColor(TFT_WHITE);
-  tft.setTextSize(1);
-  tft.setCursor(60, 190);
-  tft.println(currentTrack);
-}
-
-void updateVolumeDisplay() {
-  // Clear and update volume
-  tft.fillRect(70, 200, 60, 10, TFT_BLACK);
-  tft.setTextColor(TFT_WHITE);
-  tft.setTextSize(1);
-  tft.setCursor(70, 200);
-  tft.println(currentVolume);
-}
-
-void displayMessage(String message, uint16_t color) {
-  // Display temporary message at bottom
-  tft.fillRect(0, 300, 240, 20, TFT_BLACK);
-  tft.setTextColor(color);
-  tft.setTextSize(1);
-  tft.setCursor(10, 305);
-  tft.println(message);
-}
-
-void loop() {
-  // Check DFPlayer state
-  if (dfPlayerReady && myDFPlayer.available()) {
-    int type = myDFPlayer.readType();
-    int value = myDFPlayer.read();
-    
-    switch (type) {
-      case DFPlayerPlayFinished:
-        Serial.print("Track finished: ");
-        Serial.println(value);
-        displayMessage("Track finished", TFT_YELLOW);
-        // Auto play next track
-        currentTrack++;
-        if (currentTrack > 99) currentTrack = 1;  // Loop back to track 1
-        myDFPlayer.play(currentTrack);
-        updateTrackDisplay();
-        break;
-        
-      case DFPlayerError:
-        Serial.print("DFPlayer Error: ");
-        Serial.println(value);
-        displayMessage("Player Error", TFT_RED);
-        break;
-    }
+    Serial.println("Failed to open cat.gif!");
   }
 
-  // Handle Serial commands
-  if (Serial.available()) {
-    char cmd = Serial.read();
-    
-    if (!dfPlayerReady && cmd != 'r') {
-      Serial.println("DFPlayer not ready. Use 'r' to retry initialization.");
-      displayMessage("Player not ready", TFT_RED);
-      return;
-    }
-    
-    switch (cmd) {
-      case 'p':  // Play
-        myDFPlayer.play();
-        Serial.println("Play");
-        displayMessage("Playing", TFT_GREEN);
-        break;
-        
-      case 's':  // Stop
-        myDFPlayer.stop();
-        Serial.println("Stop");
-        displayMessage("Stopped", TFT_ORANGE);
-        break;
-        
-      case 'n':  // Next
-        currentTrack++;
-        if (currentTrack > 99) currentTrack = 1;
-        myDFPlayer.play(currentTrack);
-        Serial.print("Next track: ");
-        Serial.println(currentTrack);
-        updateTrackDisplay();
-        displayMessage("Next track", TFT_CYAN);
-        break;
-        
-      case 'b':  // Previous
-        currentTrack--;
-        if (currentTrack < 1) currentTrack = 99;
-        myDFPlayer.play(currentTrack);
-        Serial.print("Previous track: ");
-        Serial.println(currentTrack);
-        updateTrackDisplay();
-        displayMessage("Previous track", TFT_CYAN);
-        break;
-        
-      case '+':  // Volume up
-        if (currentVolume < 30) {
-          currentVolume++;
-          myDFPlayer.volume(currentVolume);
-          Serial.print("Volume: ");
-          Serial.println(currentVolume);
-          updateVolumeDisplay();
-          displayMessage("Volume up", TFT_GREEN);
-        }
-        break;
-        
-      case '-':  // Volume down
-        if (currentVolume > 0) {
-          currentVolume--;
-          myDFPlayer.volume(currentVolume);
-          Serial.print("Volume: ");
-          Serial.println(currentVolume);
-          updateVolumeDisplay();
-          displayMessage("Volume down", TFT_GREEN);
-        }
-        break;
-        
-      case 'r':  // Restart/Retry DFPlayer initialization
-        Serial.println("Retrying DFPlayer initialization...");
-        displayMessage("Reinitializing...", TFT_YELLOW);
-        dfPlayerReady = initializeDFPlayer();
-        displayMainScreen();
-        break;
-    }
+  // Delay for stability
+  delay(ESP32_STARTUP_DELAY);
+
+  // Initialize DFPlayer
+  dfPlayerReady = initializeDFPlayer();
+}
+
+void loop() {    
+  int result = gif.playFrame(true, NULL);
+  if (result == 0) {
+    gif.reset(); // Loop the animation
+  } else if (result < 0) {
+    Serial.printf("GIF error: %d\n", result);
   }
+}
+
+//-------------------------
+// DFPlayer Initialization
+//-------------------------
+bool initializeDFPlayer() {
+  Serial.println("Powering ON DFPlayer Mini...");  
+  delay(DFPLAYER_POWER_DELAY);
+
+  mySerial.begin(9600, SERIAL_8N1, RX_PIN, TX_PIN);
+  delay(DFPLAYER_INIT_DELAY);
+
+  for (int attempts = 0; attempts < 5; attempts++) {
+    if (myDFPlayer.begin(mySerial)) {
+      Serial.println("DFPlayer Mini ready!");
+      myDFPlayer.volume(currentVolume);
+      myDFPlayer.play(currentTrack);
+      return true;
+    }
+    Serial.println("DFPlayer not responding, retrying...");
+    delay(1000);
+  }
+  Serial.println("DFPlayer initialization failed");
+  return false;
 }
